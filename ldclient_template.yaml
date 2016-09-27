@@ -1,0 +1,7 @@
+# adjust and rename this file to $HOME/.ldclient.yaml
+site: 1
+user: 3
+url: https://server.public.ip:8443
+password: abc123
+socket_port: 51023
+pin: 12344321
