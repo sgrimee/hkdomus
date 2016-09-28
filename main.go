@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/spf13/viper"
 
@@ -27,54 +28,62 @@ func main() {
 	//pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
 	//pflag.Parse()
 	debug = true
+	//log.Verbose = false
 	initConfig()
 	initDomus()
 	domusLogin()
 
-	devices, err := domus.DevicesInRoom(
-		// just lamps in a given room for now
-		godomus.NewRoomKey(58), godomus.CategoryClassId("CLSID-DEVC-A-EC"))
-	if err != nil {
-		log.Fatalf("Could not get devices from LD: %s\n", err)
+	// Get devices from LD
+	for _, devNum := range []int{207, 208} {
+		dev, err := domus.GetDeviceState(godomus.NewDeviceKey(devNum))
+		if err != nil {
+			log.Fatalf("Could not get device %d: %s\n", devNum, err)
+		}
+		devices = append(devices, *dev)
 	}
+
+	// Setup bridge
+	info := accessory.Info{
+		Name: "LifeDomus",
+	}
+	bridge := accessory.New(info, accessory.TypeBridge)
+
+	var accessories []*accessory.Accessory
 
 	for _, dev := range devices {
-		go AddDevice(dev)
+		switchInfo := accessory.Info{
+			Name: dev.Label,
+		}
+		fmt.Printf("Adding device: %+v\n", dev)
+		acc := accessory.NewSwitch(switchInfo)
+
+		dk := dev.Key
+		acc.Switch.On.OnValueRemoteUpdate(func(on bool) {
+			property := godomus.PropClassId("CLSID-DEVC-PROP-TOR-SW")
+			var action godomus.ActionClassId
+
+			if on == true {
+				log.Printf("[INFO] Client changed switch %s to on\n", acc.Info.Name)
+				action = godomus.ActionClassId("CLSID-ACTION-ON")
+			} else {
+				log.Printf("[INFO] Client changed switch %s to off\n", acc.Info.Name)
+				action = godomus.ActionClassId("CLSID-ACTION-OFF")
+			}
+			err := domus.ExecuteAction(action, property, dk)
+			if err != nil {
+				log.Println(err)
+			}
+		})
+
+		accessories = append(accessories, acc.Accessory)
 	}
 
-	select {}
-}
-
-func AddDevice(dev godomus.Device) {
-	switchInfo := accessory.Info{
-		Name: dev.Label,
-	}
-	acc := accessory.NewSwitch(switchInfo)
-
-	config := hc.Config{Pin: pin, StoragePath: fmt.Sprintf("$HOME/.hkdomus/db/%s", dev.Key)}
-	t, err := hc.NewIPTransport(config, acc.Accessory)
+	config := hc.Config{Pin: pin, StoragePath: fmt.Sprintf("%s/.hkdomus/db", os.Getenv("HOME"))}
+	t, err := hc.NewIPTransport(config, bridge, accessories...)
 
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// Log to console when client (e.g. iOS app) changes the value of the on characteristic
-	acc.Switch.On.OnValueRemoteUpdate(func(on bool) {
-		property := godomus.PropClassId("CLSID-DEVC-PROP-TOR-SW")
-		var action godomus.ActionClassId
-
-		if on == true {
-			log.Printf("[INFO] Client changed switch %s to on\n", acc.Info.Name)
-			action = godomus.ActionClassId("CLSID-ACTION-ON")
-		} else {
-			log.Printf("[INFO] Client changed switch %s to off\n", acc.Info.Name)
-			action = godomus.ActionClassId("CLSID-ACTION-OFF")
-		}
-		err := domus.ExecuteAction(action, property, dev.Key)
-		if err != nil {
-			log.Print(err)
-		}
-	})
 
 	hc.OnTermination(func() {
 		t.Stop()
