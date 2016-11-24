@@ -40,7 +40,7 @@ func validateUserSet() {
 }
 
 // domusInfos logs in an returns infos
-func domusInfos() *godomus.LoginInfos {
+func domusInfos() godomus.LoginInfos {
 	validateSiteSet()
 	validateUserSet()
 	sk := godomus.NewSiteKey(viper.GetInt("site"))

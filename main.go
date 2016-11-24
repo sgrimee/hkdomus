@@ -2,13 +2,13 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/spf13/viper"
 
 	"github.com/brutella/hc"
 	"github.com/brutella/hc/accessory"
+	"github.com/brutella/log"
 
 	"github.com/sgrimee/godomus"
 )
@@ -17,59 +17,67 @@ import (
 //"github.com/spf13/pflag"
 
 var (
-	cfgFile string
-	debug   bool
-	domus   *godomus.Domus
-	devices godomus.Devices
-	pin     string
+	cfgFile  string
+	debug    bool
+	domus    *godomus.Domus
+	pin      string
+	groupKey godomus.GroupKey
 )
+
+// validateGroupSet ensures a group with exported LD devices is set
+func getConfigGroupKey() godomus.GroupKey {
+	if !viper.IsSet("group") || (viper.GetInt("group") < 1) {
+		log.Fatal("You must five a group (int), or set it in config file")
+	}
+	return godomus.NewGroupKey(viper.GetInt("group"))
+}
 
 func main() {
 	//pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
 	//pflag.Parse()
 	debug = true
-	//log.Verbose = false
 	initConfig()
 	initDomus()
 	domusLogin()
-
-	// Get devices from LD
-	for _, devNum := range []int{207, 208} {
-		dev, err := domus.GetDeviceState(godomus.NewDeviceKey(devNum))
-		if err != nil {
-			log.Fatalf("Could not get device %d: %s\n", devNum, err)
-		}
-		devices = append(devices, *dev)
-	}
+	log.Verbose = false
 
 	// Setup bridge
 	info := accessory.Info{
-		Name: "LifeDomus",
+		Name: viper.GetString("name"),
 	}
 	bridge := accessory.New(info, accessory.TypeBridge)
 
 	var accessories []*accessory.Accessory
 
-	for _, dev := range devices {
-		switchInfo := accessory.Info{
-			Name: dev.Label,
+	// Get devices from LD exported group
+	group, err := domus.GetGroup(getConfigGroupKey())
+	if err != nil {
+		log.Fatal("Could not get group %d\n", groupKey.Num())
+	}
+
+	for _, d := range group.Devices {
+		dev, err := domus.GetDeviceState(d.Key)
+		if err != nil {
+			log.Fatal("Could not get state for device %s\n", d.Key)
 		}
 		fmt.Printf("Adding device: %+v\n", dev)
+
+		switchInfo := accessory.Info{
+			// adding the room to the name to make it possible to recognise the device
+			// in the HomeKit apps at only the name is shown
+			Name: fmt.Sprintf("%s (%s)", dev.Label, dev.RoomLabel),
+		}
 		acc := accessory.NewSwitch(switchInfo)
 
-		dk := dev.Key
 		acc.Switch.On.OnValueRemoteUpdate(func(on bool) {
-			property := godomus.PropClassId("CLSID-DEVC-PROP-TOR-SW")
-			var action godomus.ActionClassId
-
-			if on == true {
-				log.Printf("[INFO] Client changed switch %s to on\n", acc.Info.Name)
-				action = godomus.ActionClassId("CLSID-ACTION-ON")
+			log.Printf("dev: %+v\n", dev)
+			var err error
+			log.Printf("[INFO] Client changing switch %s to %t\n", switchInfo.Name, on)
+			if on {
+				err = dev.On()
 			} else {
-				log.Printf("[INFO] Client changed switch %s to off\n", acc.Info.Name)
-				action = godomus.ActionClassId("CLSID-ACTION-OFF")
+				err = dev.Off()
 			}
-			err := domus.ExecuteAction(action, property, dk)
 			if err != nil {
 				log.Println(err)
 			}

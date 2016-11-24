@@ -1,7 +1,15 @@
 # adjust and rename this file to $HOME/.ldclient.yaml
+
+# name under which the bridge will appear in HK
+name: My LD bridge
+
+# LD connection settings
 site: 1
 user: 3
 url: https://server.public.ip:8443
 password: abc123
 socket_port: 51023
 pin: 12344321
+
+# the group containing devices LD exports for hkdomus
+group: 1234
