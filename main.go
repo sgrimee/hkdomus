@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/spf13/viper"
-
 	"github.com/brutella/hc"
 	"github.com/brutella/hc/accessory"
 	"github.com/brutella/log"
@@ -13,46 +11,35 @@ import (
 	"github.com/sgrimee/godomus"
 )
 
-//"flag"
-//"github.com/spf13/pflag"
-
 var (
-	cfgFile  string
-	debug    bool
-	domus    *godomus.Domus
-	pin      string
-	groupKey godomus.GroupKey
+	cfgFile string
+	config  Config
+	domus   *godomus.Domus
 )
 
-// validateGroupSet ensures a group with exported LD devices is set
-func getConfigGroupKey() godomus.GroupKey {
-	if !viper.IsSet("group") || (viper.GetInt("group") < 1) {
-		log.Fatal("You must five a group (int), or set it in config file")
-	}
-	return godomus.NewGroupKey(viper.GetInt("group"))
-}
-
 func main() {
-	//pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
-	//pflag.Parse()
-	debug = true
-	initConfig()
-	initDomus()
-	domusLogin()
+	config = getConfig()
+	domus, err := godomus.New(config.DomusConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// disable logs of hc package
 	log.Verbose = false
 
 	// Setup bridge
 	info := accessory.Info{
-		Name: viper.GetString("name"),
+		Name: config.BridgeName,
 	}
 	bridge := accessory.New(info, accessory.TypeBridge)
 
 	var accessories []*accessory.Accessory
+	accForDev := make(map[godomus.DeviceKey]*accessory.Accessory)
 
 	// Get devices from LD exported group
-	group, err := domus.GetGroup(getConfigGroupKey())
+	group, err := domus.GetGroup(config.GroupKey)
 	if err != nil {
-		log.Fatal("Could not get group %d\n", groupKey.Num())
+		log.Fatal("Could not get group %d\n", config.GroupKey.Num())
 	}
 
 	for _, d := range group.Devices {
@@ -60,7 +47,6 @@ func main() {
 		if err != nil {
 			log.Fatal("Could not get state for device %s\n", d.Key)
 		}
-		fmt.Printf("Adding device: %+v\n", dev)
 
 		switchInfo := accessory.Info{
 			// adding the room to the name to make it possible to recognise the device
@@ -83,12 +69,13 @@ func main() {
 			}
 		})
 
+		fmt.Printf("Adding device: %s\n", switchInfo.Name)
 		accessories = append(accessories, acc.Accessory)
+		accForDev[dev.Key] = acc.Accessory
 	}
 
-	config := hc.Config{Pin: pin, StoragePath: fmt.Sprintf("%s/.hkdomus/db", os.Getenv("HOME"))}
-	t, err := hc.NewIPTransport(config, bridge, accessories...)
-
+	hcConfig := hc.Config{Pin: config.Pin, StoragePath: fmt.Sprintf("%s/.hkdomus/db", os.Getenv("HOME"))}
+	t, err := hc.NewIPTransport(hcConfig, bridge, accessories...)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -97,23 +84,26 @@ func main() {
 		t.Stop()
 	})
 
-	t.Start()
-}
+	go t.Start()
 
-// initConfig reads in config file.
-func initConfig() {
-	if cfgFile != "" { // enable ability to specify config file via flag
-		viper.SetConfigFile(cfgFile)
+	// listen for device events from the LD server and update accessory status as needed
+	devices := make(chan godomus.Device, 1)
+	errs := make(chan error, 1)
+	done := make(chan struct{})
+	go domus.ListenForDeviceUpdates(devices, errs, done)
+
+	for {
+		select {
+		case d := <-devices:
+			fmt.Printf("got LD device update %s (%s): %s\n", d.Label, d.RoomLabel, d.States[0])
+			if acc, ok := accForDev[d.Key]; ok {
+				fmt.Printf("Found accessory: %s\n", acc.Info.Name)
+			}
+		case e := <-errs:
+			fmt.Printf("got LD error: %s\n", e)
+		case <-done:
+			break
+		}
 	}
-
-	viper.SetConfigName(".ldclient") // name of config file (without extension)
-	viper.AddConfigPath("$HOME")     // adding home directory as first search path
-
-	// If a config file is found, read it in.
-	if err := viper.ReadInConfig(); err == nil && debug {
-		fmt.Println("Using config file:", viper.ConfigFileUsed())
-	}
-
-	pin = viper.GetString("pin")
-
+	t.Stop()
 }
